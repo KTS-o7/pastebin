@@ -70,6 +70,8 @@ func main() {
 	mux.HandleFunc("POST /api/paste", handleCreatePaste)
 	mux.HandleFunc("DELETE /api/paste/{id}", handleDeletePaste)
 	mux.HandleFunc("GET /admin", handleAdmin)
+	mux.HandleFunc("GET /login", handleLogin)
+	mux.HandleFunc("POST /login", handleLoginPost)
 	mux.HandleFunc("GET /{id}", handleViewPaste)
 	mux.HandleFunc("GET /raw/{id}", handleRawPaste)
 	mux.HandleFunc("GET /", handleHome)
@@ -204,20 +206,12 @@ func requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 		http.Error(w, "admin not configured", http.StatusForbidden)
 		return false
 	}
-	// Check cookie first
 	cookie, _ := r.Cookie("admin_token")
 	if cookie != nil && cookie.Value == adminPass {
 		return true
 	}
-	// Check query param
-	if r.URL.Query().Get("token") == adminPass {
-		return true
-	}
-	// Check Authorization header
-	if r.Header.Get("Authorization") == "Bearer "+adminPass {
-		return true
-	}
-	http.Error(w, "unauthorized", http.StatusUnauthorized)
+	// redirect to login page
+	http.Redirect(w, r, "/login?next="+r.URL.Path, http.StatusSeeOther)
 	return false
 }
 
@@ -337,6 +331,36 @@ func handleAdmin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	render(w, "admin.html", pastes)
+}
+
+func handleLogin(w http.ResponseWriter, r *http.Request) {
+	// already logged in? redirect to admin
+	cookie, _ := r.Cookie("admin_token")
+	if cookie != nil && cookie.Value == adminPass {
+		http.Redirect(w, r, "/admin", http.StatusSeeOther)
+		return
+	}
+	render(w, "login.html", map[string]string{"Error": r.URL.Query().Get("error")})
+}
+
+func handleLoginPost(w http.ResponseWriter, r *http.Request) {
+	if r.FormValue("pass") != adminPass {
+		http.Redirect(w, r, "/login?error=wrong+password", http.StatusSeeOther)
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     "admin_token",
+		Value:    adminPass,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   86400,
+	})
+	next := r.URL.Query().Get("next")
+	if next == "" {
+		next = "/admin"
+	}
+	http.Redirect(w, r, next, http.StatusSeeOther)
 }
 
 func render(w http.ResponseWriter, name string, data interface{}) {
