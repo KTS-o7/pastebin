@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>paste.shenthar.me</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --dim: #8b949e;
+    --accent: #58a6ff;
+    --accent-hover: #79b8ff;
+    --green: #3fb950;
+    --red: #f85149;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  .container {
+    width: 100%;
+    max-width: 720px;
+    padding: 32px 16px;
+  }
+  h1 {
+    font-size: 20px;
+    font-weight: 600;
+    margin-bottom: 6px;
+    color: var(--text);
+  }
+  .subtitle {
+    color: var(--dim);
+    font-size: 13px;
+    margin-bottom: 24px;
+  }
+  textarea {
+    width: 100%;
+    min-height: 320px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-family: "JetBrains Mono", "Fira Code", "SF Mono", Consolas, monospace;
+    font-size: 14px;
+    line-height: 1.6;
+    padding: 16px;
+    resize: vertical;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  textarea:focus {
+    border-color: var(--accent);
+  }
+  .actions {
+    display: flex;
+    gap: 10px;
+    margin-top: 12px;
+    align-items: center;
+  }
+  button {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 20px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  button:hover { background: var(--accent-hover); }
+  button:active { transform: scale(0.97); }
+  #status {
+    font-size: 13px;
+    color: var(--dim);
+    margin-left: 8px;
+  }
+  #status.error { color: var(--red); }
+  #status.success { color: var(--green); }
+  #result {
+    margin-top: 16px;
+    padding: 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    display: none;
+  }
+  #result.show { display: block; }
+  #result a {
+    color: var(--accent);
+    text-decoration: none;
+    font-family: monospace;
+  }
+  #result a:hover { text-decoration: underline; }
+  .btn-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+  }
+  .btn-row button {
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+    font-size: 12px;
+    padding: 6px 14px;
+  }
+  .btn-row button:hover {
+    background: var(--border);
+  }
+  footer {
+    margin-top: auto;
+    padding: 16px;
+    font-size: 12px;
+    color: var(--dim);
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>pasta</h1>
+  <p class="subtitle">minimal pastebin · paste text, get a link</p>
+
+  <textarea id="content" placeholder="paste your text here..." autofocus></textarea>
+
+  <div class="actions">
+    <button id="pasteBtn" onclick="submitPaste()">Create Paste</button>
+    <span id="status"></span>
+  </div>
+
+  <div id="result">
+    <div style="margin-bottom:6px;font-size:13px;color:var(--dim);">Your paste:</div>
+    <a id="pasteLink" href="#" target="_blank"></a>
+    <div class="btn-row">
+      <button onclick="copyLink()">Copy Link</button>
+      <button onclick="copyRaw()">Copy Raw</button>
+    </div>
+  </div>
+</div>
+
+<footer>paste.shenthar.me</footer>
+
+<script>
+async function submitPaste() {
+  const content = document.getElementById('content').value.trim();
+  const status = document.getElementById('status');
+  const result = document.getElementById('result');
+
+  if (!content) {
+    status.textContent = 'nothing to paste';
+    status.className = 'error';
+    return;
+  }
+
+  status.textContent = 'creating...';
+  status.className = '';
+
+  try {
+    const resp = await fetch('/api/paste', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content })
+    });
+
+    if (!resp.ok) {
+      const txt = await resp.text();
+      throw new Error(txt);
+    }
+
+    const data = await resp.json();
+    const fullUrl = window.location.origin + data.url;
+
+    document.getElementById('pasteLink').href = fullUrl;
+    document.getElementById('pasteLink').textContent = fullUrl;
+    result.className = 'show';
+    status.textContent = 'done!';
+    status.className = 'success';
+  } catch (err) {
+    status.textContent = err.message;
+    status.className = 'error';
+  }
+}
+
+function copyLink() {
+  const link = document.getElementById('pasteLink').href;
+  navigator.clipboard.writeText(link);
+}
+
+function copyRaw() {
+  const link = document.getElementById('pasteLink').href;
+  const id = link.split('/').pop();
+  const rawUrl = window.location.origin + '/raw/' + id;
+  navigator.clipboard.writeText(rawUrl);
+}
+
+// Submit on Ctrl+Enter
+document.getElementById('content').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+    submitPaste();
+  }
+});
+</script>
+</body>
+</html>
