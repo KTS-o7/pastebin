@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>admin — paste.shenthar.me</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --dim: #8b949e;
+    --accent: #58a6ff;
+    --red: #f85149;
+    --red-hover: #d73a49;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 24px 16px;
+  }
+  .container { max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 20px; margin-bottom: 6px; }
+  .subtitle { color: var(--dim); font-size: 13px; margin-bottom: 20px; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  th {
+    color: var(--dim);
+    font-weight: 500;
+    font-size: 12px;
+    text-transform: uppercase;
+  }
+  tr:hover { background: var(--surface); }
+  td a {
+    color: var(--accent);
+    text-decoration: none;
+    font-family: monospace;
+  }
+  td a:hover { text-decoration: underline; }
+  .preview {
+    color: var(--dim);
+    max-width: 400px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: monospace;
+    font-size: 12px;
+  }
+  button.delete {
+    background: none;
+    border: 1px solid var(--red);
+    color: var(--red);
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.1s;
+  }
+  button.delete:hover {
+    background: var(--red);
+    color: #fff;
+  }
+  .empty {
+    color: var(--dim);
+    text-align: center;
+    padding: 40px;
+    font-size: 14px;
+  }
+  .back {
+    margin-bottom: 16px;
+    font-size: 13px;
+  }
+  .back a { color: var(--accent); text-decoration: none; }
+  .back a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="back"><a href="/">&larr; back to pastebin</a></div>
+  <h1>admin panel</h1>
+  <p class="subtitle">{{len .}} pastes</p>
+
+  {{if .}}
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Created</th>
+        <th>Preview</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .}}
+      <tr>
+        <td><a href="/{{.ID}}" target="_blank">{{.ID}}</a></td>
+        <td style="white-space:nowrap">{{.Created}}</td>
+        <td><div class="preview">{{.Content}}</div></td>
+        <td><button class="delete" onclick="deletePaste('{{.ID}}', this)">Delete</button></td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <div class="empty">no pastes yet</div>
+  {{end}}
+</div>
+
+<script>
+async function deletePaste(id, btn) {
+  if (!confirm('Delete ' + id + '?')) return;
+  const token = new URLSearchParams(window.location.search).get('token');
+  try {
+    const resp = await fetch('/api/paste/' + id, {
+      method: 'DELETE',
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+    if (resp.ok) {
+      btn.closest('tr').remove();
+    } else {
+      alert('Delete failed: ' + await resp.text());
+    }
+  } catch (err) {
+    alert('Error: ' + err.message);
+  }
+}
+</script>
+</body>
+</html>

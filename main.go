@@ -9,10 +9,13 @@ import (
 	"io"
 	"log"
 	"math/big"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -20,10 +23,12 @@ import (
 var templatesFS embed.FS
 
 const (
-	dataDir    = "data"
-	idChars    = "abcdefghijklmnopqrstuvwxyz0123456789"
-	idLen      = 6
-	maxPasteKB = 512
+	dataDir        = "data"
+	idChars        = "abcdefghijklmnopqrstuvwxyz0123456789"
+	idLen          = 6
+	maxPasteKB     = 512
+	rateLimitWindow = time.Hour
+	rateLimitMax   = 30 // pastes per IP per window
 )
 
 type Paste struct {
@@ -32,23 +37,39 @@ type Paste struct {
 	Created string `json:"created"`
 }
 
-var tmpl *template.Template
+var (
+	tmpl      *template.Template
+	adminPass string
+
+	// rate limiting
+	rateMu    sync.Mutex
+	rateMap   = make(map[string][]time.Time)
+)
 
 func main() {
-	// Parse templates with func map
 	tmpl = template.Must(template.New("").Funcs(template.FuncMap{
 		"splitLines": func(s string) []string { return strings.Split(s, "\n") },
+		"trim":       func(s string, n int) string { if len(s) > n { return s[:n] + "..." }; return s },
 	}).ParseFS(templatesFS, "templates/*.html"))
 
-	// Ensure data dir exists
+	adminPass = os.Getenv("ADMIN_PASSWORD")
+
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		log.Fatalf("failed to create data dir: %v", err)
 	}
 
+	// periodic cleanup of rate limit map
+	go func() {
+		for range time.Tick(10 * time.Minute) {
+			cleanupRateMap()
+		}
+	}()
+
 	mux := http.NewServeMux()
 
-	// Static path for API
 	mux.HandleFunc("POST /api/paste", handleCreatePaste)
+	mux.HandleFunc("DELETE /api/paste/{id}", handleDeletePaste)
+	mux.HandleFunc("GET /admin", handleAdmin)
 	mux.HandleFunc("GET /{id}", handleViewPaste)
 	mux.HandleFunc("GET /raw/{id}", handleRawPaste)
 	mux.HandleFunc("GET /", handleHome)
@@ -99,6 +120,109 @@ func loadPaste(id string) (*Paste, error) {
 	return &p, nil
 }
 
+func listPastes() ([]Paste, error) {
+	entries, err := os.ReadDir(dataDir)
+	if err != nil {
+		return nil, err
+	}
+	var pastes []Paste
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		p, err := loadPaste(strings.TrimSuffix(e.Name(), ".json"))
+		if err != nil {
+			continue
+		}
+		pastes = append(pastes, *p)
+	}
+	sort.Slice(pastes, func(i, j int) bool {
+		return pastes[i].Created > pastes[j].Created
+	})
+	return pastes, nil
+}
+
+func clientIP(r *http.Request) string {
+	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+		parts := strings.Split(fwd, ",")
+		return strings.TrimSpace(parts[0])
+	}
+	if fwd := r.Header.Get("X-Real-IP"); fwd != "" {
+		return fwd
+	}
+	host, _, _ := net.SplitHostPort(r.RemoteAddr)
+	return host
+}
+
+func checkRateLimit(ip string) bool {
+	rateMu.Lock()
+	defer rateMu.Unlock()
+
+	now := time.Now()
+	cutoff := now.Add(-rateLimitWindow)
+
+	times := rateMap[ip]
+	var recent []time.Time
+	for _, t := range times {
+		if t.After(cutoff) {
+			recent = append(recent, t)
+		}
+	}
+
+	if len(recent) >= rateLimitMax {
+		rateMap[ip] = recent
+		return false
+	}
+
+	recent = append(recent, now)
+	rateMap[ip] = recent
+	return true
+}
+
+func cleanupRateMap() {
+	rateMu.Lock()
+	defer rateMu.Unlock()
+
+	cutoff := time.Now().Add(-rateLimitWindow)
+	for ip, times := range rateMap {
+		var recent []time.Time
+		for _, t := range times {
+			if t.After(cutoff) {
+				recent = append(recent, t)
+			}
+		}
+		if len(recent) == 0 {
+			delete(rateMap, ip)
+		} else {
+			rateMap[ip] = recent
+		}
+	}
+}
+
+func requireAdmin(w http.ResponseWriter, r *http.Request) bool {
+	if adminPass == "" {
+		http.Error(w, "admin not configured", http.StatusForbidden)
+		return false
+	}
+	// Check cookie first
+	cookie, _ := r.Cookie("admin_token")
+	if cookie != nil && cookie.Value == adminPass {
+		return true
+	}
+	// Check query param
+	if r.URL.Query().Get("token") == adminPass {
+		return true
+	}
+	// Check Authorization header
+	if r.Header.Get("Authorization") == "Bearer "+adminPass {
+		return true
+	}
+	http.Error(w, "unauthorized", http.StatusUnauthorized)
+	return false
+}
+
+// --- Handlers ---
+
 func handleHome(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
@@ -108,9 +232,13 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleCreatePaste(w http.ResponseWriter, r *http.Request) {
-	// Accept JSON or form-encoded
-	var content string
+	ip := clientIP(r)
+	if !checkRateLimit(ip) {
+		http.Error(w, "rate limited — too many pastes, try later", http.StatusTooManyRequests)
+		return
+	}
 
+	var content string
 	ct := r.Header.Get("Content-Type")
 	if strings.Contains(ct, "application/json") {
 		var req struct {
@@ -160,13 +288,11 @@ func handleViewPaste(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-
 	p, err := loadPaste(id)
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-
 	render(w, "paste.html", p)
 }
 
@@ -176,15 +302,41 @@ func handleRawPaste(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-
 	p, err := loadPaste(id)
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Write([]byte(p.Content))
+}
+
+func handleDeletePaste(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) {
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		http.Error(w, "missing id", http.StatusBadRequest)
+		return
+	}
+	if err := os.Remove(pastePath(id)); err != nil {
+		http.Error(w, "not found or delete failed", http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func handleAdmin(w http.ResponseWriter, r *http.Request) {
+	if !requireAdmin(w, r) {
+		return
+	}
+	pastes, err := listPastes()
+	if err != nil {
+		http.Error(w, "failed to list pastes", http.StatusInternalServerError)
+		return
+	}
+	render(w, "admin.html", pastes)
 }
 
 func render(w http.ResponseWriter, name string, data interface{}) {
